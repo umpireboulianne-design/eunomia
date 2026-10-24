@@ -78,6 +78,15 @@ describe("Compliance — full predicate (range, sum, commitment, whitelist)", fu
     await T.expectFail(await build(AMT, [99n, 22n, 11n, 11n, 11n, 11n, 11n, 11n], SALT));
   });
 
+  it("fails when payee 0 is claimed against a padded tree slot", async () => {
+    const b = await build(AMT, [0n, 22n, 11n, 11n, 11n, 11n, 11n, 11n], SALT);
+    const padPath = tree.pathFor(MEMBERS.length);
+    b.pathElements[0] = padPath.pathElements;
+    b.pathIndices[0] = padPath.pathIndices;
+    await T.expectFail(b);
+  });
+
+
   // The binding that stops the predicate from being vacuous. `periodSpent` is read from
   // the treasury's own storage by the verifier, so a batch that does not add up to it is
   // a batch that did not happen.

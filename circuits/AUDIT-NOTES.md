@@ -43,3 +43,7 @@ Devrede `perTaskLimit` karşılaştırması `LessEqThan(nBits)` (=64 bit), `dail
 
 ### Bulgu 3 — FALSE ALARM, yorum gerekçelendirildi ✅ (commit `cb7836e`)
 `Num2Bits(64)` amount'u `≤ 2^64-1`'e hapseder (2^64 değil). N=16'da maksimum toplam = `16·(2^64-1) = 2^68-16 < 2^68` → `Num2Bits(68)`'e **sığar**, yorumdaki "N<=16" doğru. Marj 16 birim — devre yorumuna tam hesap + "N>16 ⇒ nBits+5" kuralı yazıldı (constraint değişikliği yok).
+
+### Bulgu 4 — Merkle empty-leaf padding (`0n` vs `H(0)`) ✅
+`helpers.ts` boş yaprakları `H([0n])` (`Poseidon(0)`) ile dolduruyordu; devre her payee'yi `Poseidon(payee)` olarak yaprakladığı için `< 256` üyeli her ağaçta `payee = 0` üyelik kontrolünden geçiyordu. Boş yapraklar artık hiçbir `Poseidon(x)` çıktısı olamayan literal `0n` ile dolduruluyor (yalnızca off-chain, yeni trusted setup gerekmez). **Not:** Önceki `H(0)` dolgusuyla `whitelist_root` yayınlamış kasa sahiplerinin `whitelist_root` değerini yeniden yayınlaması (`set_whitelist_root` / `--publish-root`) gerekir.
+

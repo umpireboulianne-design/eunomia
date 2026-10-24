@@ -25,12 +25,17 @@ export type Tree = {
 /**
  * Fixed-depth Poseidon Merkle tree over the whitelist, matching the circuit:
  * leaf = Poseidon(payee), node = Poseidon(left, right), pathIndices[l] = (index >> l) & 1.
+ *
+ * Empty leaf slots are padded with literal `0n` (not `Poseidon(0)`), which no `Poseidon(x)`
+ * can produce — otherwise `payee = 0` would pass membership in every tree with fewer than
+ * `2^levels` members. Treasuries whose `whitelist_root` was computed with `H(0)` padding must
+ * republish their `whitelist_root` (`set_whitelist_root` / `prove-and-submit.ts --publish-root`).
  */
 export async function buildTree(payees: bigint[], levels = 8): Promise<Tree> {
   const layer: bigint[] = [];
   for (const p of payees) layer.push(await leaf(p));
-  const zeroLeaf = await H([0n]);
-  while (layer.length < 1 << levels) layer.push(zeroLeaf);
+  while (layer.length < 1 << levels) layer.push(0n);
+
 
   const layers: bigint[][] = [layer];
   for (let l = 0; l < levels; l++) {
