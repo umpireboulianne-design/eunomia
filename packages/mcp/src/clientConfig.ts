@@ -7,8 +7,12 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { SERVER_VERSION } from "./server.js";
+
 export type ClientName = "claude-desktop" | "cursor" | "claude-code";
 export const CLIENTS: ClientName[] = ["claude-desktop", "cursor", "claude-code"];
+
+export const PINNED_PACKAGE = `eunomia-mcp@${SERVER_VERSION}`;
 
 export interface ServerEntry {
   command: string;
@@ -20,8 +24,8 @@ export interface ServerEntry {
  *  finds no executable (it is npx.cmd), so it goes through cmd. */
 export function serverEntry(env: Record<string, string>, platform: NodeJS.Platform = process.platform): ServerEntry {
   return platform === "win32"
-    ? { command: "cmd", args: ["/c", "npx", "-y", "eunomia-mcp"], env }
-    : { command: "npx", args: ["-y", "eunomia-mcp"], env };
+    ? { command: "cmd", args: ["/c", "npx", "-y", PINNED_PACKAGE], env }
+    : { command: "npx", args: ["-y", PINNED_PACKAGE], env };
 }
 
 /** Where each client keeps its MCP servers. */
@@ -59,16 +63,22 @@ export interface WriteResult {
   backup?: string;
 }
 
-export function writeClientConfig(client: ClientName, env: Record<string, string>): WriteResult {
+export function writeClientConfig(
+  client: ClientName,
+  env: Record<string, string>,
+  options?: { home?: string; platform?: NodeJS.Platform; processEnv?: NodeJS.ProcessEnv; exec?: (cmd: string, args: string[]) => void },
+): WriteResult {
   if (client === "claude-code") {
     // Claude Code owns its config; `claude mcp add` is the supported way in.
     const args = ["mcp", "add", "--scope", "user", "eunomia"];
     for (const [k, v] of Object.entries(env)) args.push("-e", `${k}=${v}`);
-    args.push("--", "npx", "-y", "eunomia-mcp");
-    execFileSync(process.platform === "win32" ? "claude.cmd" : "claude", args, { stdio: "ignore" });
+    args.push("--", "npx", "-y", PINNED_PACKAGE);
+    const cmd = (options?.platform ?? process.platform) === "win32" ? "claude.cmd" : "claude";
+    if (options?.exec) options.exec(cmd, args);
+    else execFileSync(cmd, args, { stdio: "ignore" });
     return { client, where: `claude ${args.join(" ")}` };
   }
-  const path = configPath(client);
+  const path = configPath(client, options?.platform, options?.processEnv, options?.home);
   const existing = existsSync(path) ? readFileSync(path, "utf8") : null;
   const next = mergeServer(existing, serverEntry(env));
   mkdirSync(dirname(path), { recursive: true });

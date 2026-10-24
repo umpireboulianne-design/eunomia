@@ -84,15 +84,16 @@ function serverEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 
 function configSnippet(env: NodeJS.ProcessEnv, client: string): string {
   const envBlock = serverEnv(env);
+  const pkg = `eunomia-mcp@${SERVER_VERSION}`;
   switch (client) {
     case "claude-code": {
       const flags = Object.entries(envBlock).map(([k, v]) => `-e ${k}=${v}`).join(" ");
-      return `claude mcp add eunomia ${flags} -- npx -y eunomia-mcp`;
+      return `claude mcp add eunomia ${flags} -- npx -y ${pkg}`;
     }
     case "claude-desktop":
     case "json":
       return JSON.stringify(
-        { mcpServers: { eunomia: { command: "npx", args: ["-y", "eunomia-mcp"], env: envBlock } } },
+        { mcpServers: { eunomia: { command: "npx", args: ["-y", pkg], env: envBlock } } },
         null,
         2,
       );

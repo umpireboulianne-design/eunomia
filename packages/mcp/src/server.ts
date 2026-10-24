@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fileCache, type KnownPayeeCache } from "./cache.js";
@@ -7,8 +8,13 @@ import { fileExceptionStore, filePurchaseLog, type ExceptionStore, type Purchase
 import { registerSpendTools } from "./spendTools.js";
 import { registerTools } from "./tools.js";
 
-export const SERVER_NAME = "eunomia-mcp";
-export const SERVER_VERSION = "0.3.0";
+const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+  name: string;
+  version: string;
+};
+
+export const SERVER_NAME = pkg.name;
+export const SERVER_VERSION = pkg.version;
 
 export interface ServerContext {
   net: NetworkConfig;
