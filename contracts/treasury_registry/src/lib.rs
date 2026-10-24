@@ -4,7 +4,8 @@
 //! instead of relying on one browser's localStorage.
 //!
 //! Deliberately minimal: no admin, no constructor. Only the owner can change their own
-//! list (`owner.require_auth`) and pays their own storage rent, so no cap is needed.
+//! list (`owner.require_auth`), and each owner's list is bounded (`MAX_TREASURIES_PER_OWNER`)
+//! with persistent TTL extended on every write.
 //!
 //! An entry is a claim the app acts on — it adopts the treasuries listed under a wallet —
 //! so `register` checks the claim instead of storing it as given (review H2): the treasury
@@ -40,6 +41,12 @@ pub trait TreasuryApi {
     fn get_config(env: Env) -> Config;
 }
 
+const LEDGERS_PER_WEEK: u32 = 120_960;
+const OWNED_TTL_THRESHOLD: u32 = 8 * LEDGERS_PER_WEEK;
+const OWNED_TTL_EXTEND_TO: u32 = 17 * LEDGERS_PER_WEEK;
+/// Maximum treasuries tracked per owner in a single persistent `Vec<Address>` entry.
+pub const MAX_TREASURIES_PER_OWNER: u32 = 64;
+
 #[contract]
 pub struct TreasuryRegistry;
 
@@ -59,11 +66,17 @@ impl TreasuryRegistry {
             .get(&key)
             .unwrap_or(Vec::new(&env));
         if !owned.contains(&treasury) {
+            if owned.len() >= MAX_TREASURIES_PER_OWNER {
+                panic!("too many treasuries registered for owner");
+            }
             owned.push_back(treasury.clone());
             env.storage().persistent().set(&key, &owned);
             env.events()
                 .publish((symbol_short!("regd"), owner), treasury);
         }
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, OWNED_TTL_THRESHOLD, OWNED_TTL_EXTEND_TO);
     }
 
     /// Drop `treasury` from `owner`'s list. Owner-signed; an absent entry is a no-op.
@@ -85,6 +98,9 @@ impl TreasuryRegistry {
             env.storage().persistent().remove(&key);
         } else {
             env.storage().persistent().set(&key, &owned);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, OWNED_TTL_THRESHOLD, OWNED_TTL_EXTEND_TO);
         }
         env.events()
             .publish((symbol_short!("unregd"), owner), treasury);
@@ -102,7 +118,7 @@ impl TreasuryRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{storage::Persistent as _, Address as _, Ledger};
 
     /// Stands in for a treasury: answers `get_config` with the admin it was built with.
     #[contract]
@@ -233,5 +249,69 @@ mod test {
         let env = Env::default();
         let client = registry(&env);
         assert_eq!(client.treasuries_of(&Address::generate(&env)).len(), 0);
+    }
+
+    #[test]
+    fn register_and_unregister_extend_owned_ttl() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = registry(&env);
+
+        let owner = Address::generate(&env);
+        let t1 = treasury_of(&env, &owner);
+        let t2 = treasury_of(&env, &owner);
+        let key = DataKey::Owned(owner.clone());
+
+        client.register(&owner, &t1);
+        let ttl_initial = env.as_contract(&client.address, || {
+            env.storage().persistent().get_ttl(&key)
+        });
+        assert!(ttl_initial >= OWNED_TTL_EXTEND_TO - 1);
+
+        env.ledger()
+            .with_mut(|li| li.sequence_number += ttl_initial - 100);
+        let ttl_decayed = env.as_contract(&client.address, || {
+            env.storage().persistent().get_ttl(&key)
+        });
+        assert!(ttl_decayed < OWNED_TTL_THRESHOLD);
+
+        client.register(&owner, &t2);
+        let ttl_after_reg = env.as_contract(&client.address, || {
+            env.storage().persistent().get_ttl(&key)
+        });
+        assert!(ttl_after_reg >= OWNED_TTL_EXTEND_TO - 1);
+
+        env.ledger()
+            .with_mut(|li| li.sequence_number += ttl_after_reg - 100);
+        client.unregister(&owner, &t1);
+        let ttl_after_unreg = env.as_contract(&client.address, || {
+            env.storage().persistent().get_ttl(&key)
+        });
+        assert!(ttl_after_unreg >= OWNED_TTL_EXTEND_TO - 1);
+    }
+
+    #[test]
+    fn register_caps_treasuries_per_owner() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = registry(&env);
+        let owner = Address::generate(&env);
+
+        let mut first = None;
+        for _ in 0..MAX_TREASURIES_PER_OWNER {
+            let t = treasury_of(&env, &owner);
+            if first.is_none() {
+                first = Some(t.clone());
+            }
+            client.register(&owner, &t);
+        }
+        assert_eq!(client.treasuries_of(&owner).len(), MAX_TREASURIES_PER_OWNER);
+
+        let overflow = treasury_of(&env, &owner);
+        assert!(client.try_register(&owner, &overflow).is_err());
+
+        client.unregister(&owner, &first.unwrap());
+        client.register(&owner, &overflow);
+        assert_eq!(client.treasuries_of(&owner).len(), MAX_TREASURIES_PER_OWNER);
     }
 }
