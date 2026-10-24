@@ -17,5 +17,12 @@ export * from "./exceptionCodec.js";
 export * from "./exception.js";
 export * from "./store.js";
 export { serializeBudget, serializeOutcome, ownerActionsFor, registerTools } from "./tools.js";
+export { registerSpendTools } from "./spendTools.js";
+export * from "./float.js";
+export * from "./call.js";
+export * from "./catalog.js";
+export * from "./budgetRequestCodec.js";
+export * from "./clientConfig.js";
 export { createServer, contextFromEnv, SERVER_NAME, SERVER_VERSION } from "./server.js";
 export type { ServerContext } from "./server.js";
+
