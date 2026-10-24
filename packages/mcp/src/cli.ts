@@ -82,23 +82,10 @@ function serverEnv(env: NodeJS.ProcessEnv): Record<string, string> {
   return envBlock;
 }
 
+import { configSnippet as renderConfigSnippet } from "./clientConfig.js";
+
 function configSnippet(env: NodeJS.ProcessEnv, client: string): string {
-  const envBlock = serverEnv(env);
-  switch (client) {
-    case "claude-code": {
-      const flags = Object.entries(envBlock).map(([k, v]) => `-e ${k}=${v}`).join(" ");
-      return `claude mcp add eunomia ${flags} -- npx -y eunomia-mcp`;
-    }
-    case "claude-desktop":
-    case "json":
-      return JSON.stringify(
-        { mcpServers: { eunomia: { command: "npx", args: ["-y", "eunomia-mcp"], env: envBlock } } },
-        null,
-        2,
-      );
-    default:
-      throw new Error(`Unknown --client "${client}" — use json, claude-code or claude-desktop.`);
-  }
+  return renderConfigSnippet(serverEnv(env), client as ClientName | "json");
 }
 
 async function serve(): Promise<void> {
@@ -158,7 +145,7 @@ ${configSnippet(env, "json")}`;
     return `Added to ${client}: ${done.where}${kept}\nRestart ${client === "cursor" ? "Cursor" : "Claude Desktop"} to load it.`;
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
-    return `Could not write the ${client} config (${why}). Add this yourself:\n${configSnippet(env, client === "claude-code" ? "claude-code" : "json")}`;
+    return `Could not write the ${client} config (${why}). Add this yourself:\n${configSnippet(env, client)}`;
   }
 }
 

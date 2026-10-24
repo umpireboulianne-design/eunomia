@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { configPath, mergeServer, serverEntry } from "./clientConfig.js";
+import { configPath, configSnippet, mergeServer, serverEntry } from "./clientConfig.js";
 
 const ENV = { EUNOMIA_TREASURY: "CTREASURY", EUNOMIA_NETWORK: "pubnet" };
 
@@ -38,3 +38,51 @@ test("the agent's secret never goes into a client config", () => {
   const entry = serverEntry(ENV, "linux");
   assert.ok(!JSON.stringify(entry).includes("SECRET"));
 });
+
+test("configSnippet builds all 3 clients from serverEntry across posix and win32", () => {
+  const posixJson = JSON.stringify(
+    {
+      mcpServers: {
+        eunomia: {
+          command: "npx",
+          args: ["-y", "eunomia-mcp"],
+          env: ENV,
+        },
+      },
+    },
+    null,
+    2,
+  );
+  const win32Json = JSON.stringify(
+    {
+      mcpServers: {
+        eunomia: {
+          command: "cmd",
+          args: ["/c", "npx", "-y", "eunomia-mcp"],
+          env: ENV,
+        },
+      },
+    },
+    null,
+    2,
+  );
+
+  assert.equal(configSnippet(ENV, "claude-desktop", "linux"), posixJson);
+  assert.equal(configSnippet(ENV, "cursor", "linux"), posixJson);
+  assert.equal(configSnippet(ENV, "json", "linux"), posixJson);
+  assert.equal(
+    configSnippet(ENV, "claude-code", "linux"),
+    "claude mcp add --scope user eunomia -e EUNOMIA_TREASURY=CTREASURY -e EUNOMIA_NETWORK=pubnet -- npx -y eunomia-mcp",
+  );
+
+  assert.equal(configSnippet(ENV, "claude-desktop", "win32"), win32Json);
+  assert.equal(configSnippet(ENV, "cursor", "win32"), win32Json);
+  assert.equal(configSnippet(ENV, "json", "win32"), win32Json);
+  assert.equal(
+    configSnippet(ENV, "claude-code", "win32"),
+    "claude mcp add --scope user eunomia -e EUNOMIA_TREASURY=CTREASURY -e EUNOMIA_NETWORK=pubnet -- cmd /c npx -y eunomia-mcp",
+  );
+
+  assert.throws(() => configSnippet(ENV, "unknown" as never, "linux"), /Unknown --client "unknown"/);
+});
+

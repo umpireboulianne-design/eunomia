@@ -24,6 +24,28 @@ export function serverEntry(env: Record<string, string>, platform: NodeJS.Platfo
     : { command: "npx", args: ["-y", "eunomia-mcp"], env };
 }
 
+/** Printed by `eunomia-mcp config` and by `init` when it cannot write the client file itself.
+ *  Built from `serverEntry()` so Windows gets the `cmd /c` wrapper and Claude Code gets `--scope user`. */
+export function configSnippet(
+  env: Record<string, string>,
+  client: ClientName | "json" = "json",
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const entry = serverEntry(env, platform);
+  switch (client) {
+    case "claude-code": {
+      const flags = Object.entries(entry.env).map(([k, v]) => `-e ${k}=${v}`).join(" ");
+      return `claude mcp add --scope user eunomia ${flags} -- ${[entry.command, ...entry.args].join(" ")}`;
+    }
+    case "claude-desktop":
+    case "cursor":
+    case "json":
+      return JSON.stringify({ mcpServers: { eunomia: entry } }, null, 2);
+    default:
+      throw new Error(`Unknown --client "${client}" — use json, claude-desktop, cursor or claude-code.`);
+  }
+}
+
 /** Where each client keeps its MCP servers. */
 export function configPath(
   client: Exclude<ClientName, "claude-code">,
@@ -62,9 +84,10 @@ export interface WriteResult {
 export function writeClientConfig(client: ClientName, env: Record<string, string>): WriteResult {
   if (client === "claude-code") {
     // Claude Code owns its config; `claude mcp add` is the supported way in.
+    const entry = serverEntry(env);
     const args = ["mcp", "add", "--scope", "user", "eunomia"];
-    for (const [k, v] of Object.entries(env)) args.push("-e", `${k}=${v}`);
-    args.push("--", "npx", "-y", "eunomia-mcp");
+    for (const [k, v] of Object.entries(entry.env)) args.push("-e", `${k}=${v}`);
+    args.push("--", entry.command, ...entry.args);
     execFileSync(process.platform === "win32" ? "claude.cmd" : "claude", args, { stdio: "ignore" });
     return { client, where: `claude ${args.join(" ")}` };
   }
