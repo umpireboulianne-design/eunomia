@@ -2,7 +2,7 @@ import { Circomkit } from "circomkit";
 import { H, buildTree, type Tree } from "./helpers.js";
 
 const circomkit = new Circomkit();
-const N = 8;
+const N = 16;
 const LEVELS = 8;
 const NBITS = 64;
 
@@ -25,7 +25,13 @@ describe("Compliance — full predicate (range, sum, commitment, whitelist)", fu
   });
 
   /** `periodSpent` defaults to the batch's own total, i.e. an honest claim. */
-  async function build(amount: number[], payee: bigint[], salt: bigint[], periodSpent?: number) {
+  async function build(
+    amount: (number | bigint)[],
+    payee: bigint[],
+    salt: bigint[],
+    periodSpent?: number | bigint,
+    limits?: { dailyLimit?: number | bigint; perTaskLimit?: number | bigint },
+  ) {
     const commitments: bigint[] = [];
     const pathElements: bigint[][] = [];
     const pathIndices: number[][] = [];
@@ -37,11 +43,11 @@ describe("Compliance — full predicate (range, sum, commitment, whitelist)", fu
       pathIndices.push(path.pathIndices);
     }
     return {
-      dailyLimit: 1000,
-      perTaskLimit: 300,
+      dailyLimit: limits?.dailyLimit ?? 1000,
+      perTaskLimit: limits?.perTaskLimit ?? 300,
       whitelistRoot: tree.root,
       periodId: 1,
-      periodSpent: periodSpent ?? amount.reduce((a, b) => a + b, 0),
+      periodSpent: periodSpent ?? amount.reduce<bigint>((a, b) => a + BigInt(b), 0n),
       commitments,
       amount,
       payee,
@@ -52,20 +58,32 @@ describe("Compliance — full predicate (range, sum, commitment, whitelist)", fu
   }
 
   // padding slots reuse a whitelisted member (11n) with amount 0
-  const PAYEE = [11n, 22n, 11n, 11n, 11n, 11n, 11n, 11n];
-  const AMT = [100, 200, 0, 0, 0, 0, 0, 0];
-  const SALT = [1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n];
+  const PAYEE = [11n, 22n, ...Array<bigint>(N - 2).fill(11n)];
+  const AMT = [100, 200, ...Array<number>(N - 2).fill(0)];
+  const SALT = Array.from({ length: N }, (_, i) => BigInt(i + 1));
 
   it("passes a compliant batch", async () => {
     await T.expectPass(await build(AMT, PAYEE, SALT));
   });
 
+  it("passes at the 64-bit ceiling when every slot is 2^64 - 1", async () => {
+    const maxSlot = (1n << 64n) - 1n;
+    const maxAmounts = Array<bigint>(N).fill(maxSlot);
+    const maxTotal = BigInt(N) * maxSlot;
+    await T.expectPass(
+      await build(maxAmounts, PAYEE, SALT, maxTotal, {
+        dailyLimit: maxTotal,
+        perTaskLimit: maxSlot,
+      }),
+    );
+  });
+
   it("fails when one amount exceeds the per-task limit", async () => {
-    await T.expectFail(await build([301, 0, 0, 0, 0, 0, 0, 0], PAYEE, SALT));
+    await T.expectFail(await build([301, ...Array<number>(N - 1).fill(0)], PAYEE, SALT));
   });
 
   it("fails when the sum exceeds the daily limit", async () => {
-    await T.expectFail(await build([300, 300, 300, 200, 0, 0, 0, 0], PAYEE, SALT));
+    await T.expectFail(await build([300, 300, 300, 200, ...Array<number>(N - 4).fill(0)], PAYEE, SALT));
   });
 
   it("fails when a commitment does not match its preimage", async () => {
@@ -75,7 +93,7 @@ describe("Compliance — full predicate (range, sum, commitment, whitelist)", fu
   });
 
   it("fails when a payee is not in the whitelist", async () => {
-    await T.expectFail(await build(AMT, [99n, 22n, 11n, 11n, 11n, 11n, 11n, 11n], SALT));
+    await T.expectFail(await build(AMT, [99n, 22n, ...Array<bigint>(N - 2).fill(11n)], SALT));
   });
 
   // The binding that stops the predicate from being vacuous. `periodSpent` is read from
@@ -92,7 +110,7 @@ describe("Compliance — full predicate (range, sum, commitment, whitelist)", fu
 
     it("still fails on a total that matches but breaks the per-task limit", async () => {
       // 301 == periodSpent, so the binding is satisfied — the policy check must still bite.
-      await T.expectFail(await build([301, 0, 0, 0, 0, 0, 0, 0], PAYEE, SALT, 301));
+      await T.expectFail(await build([301, ...Array<number>(N - 1).fill(0)], PAYEE, SALT, 301));
     });
   });
 });

@@ -51,4 +51,87 @@ describe("buildInput (parametric prover)", () => {
     }
     expect(err?.message).to.match(/does not match the period's on-chain spend/);
   });
+
+  it("refuses an empty whitelist", async () => {
+    const batch = {
+      payments: [],
+      whitelist: [],
+      dailyLimit: 1000n,
+      perTaskLimit: 300n,
+      periodId: 2n,
+      periodSpent: 0n,
+    };
+    let err: Error | undefined;
+    try {
+      await buildInput(batch);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err?.message).to.match(/whitelist cannot be empty/);
+  });
+
+  it("refuses a batch with more than N payments", async () => {
+    const payments = Array.from({ length: N + 1 }, () => ({ amount: 1n, payee: 11n }));
+    const batch = {
+      payments,
+      whitelist: [11n, 22n],
+      dailyLimit: 1000n,
+      perTaskLimit: 300n,
+      periodId: 2n,
+      periodSpent: BigInt(N + 1),
+    };
+    let err: Error | undefined;
+    try {
+      await buildInput(batch);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err?.message).to.match(/exceeds the circuit batch capacity N=16/);
+  });
+
+  it("refuses a payment whose payee is not in the whitelist", async () => {
+    const batch = {
+      payments: [
+        { amount: 50n, payee: 11n },
+        { amount: 75n, payee: 99n },
+      ],
+      whitelist: [11n, 22n, 33n],
+      dailyLimit: 1000n,
+      perTaskLimit: 300n,
+      periodId: 2n,
+      periodSpent: 125n,
+    };
+    let err: Error | undefined;
+    try {
+      await buildInput(batch);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err?.message).to.match(/payee 99 at payment 1 is not in the whitelist/);
+  });
+
+  it("refuses a whitelist exceeding the Merkle tree capacity (1 << levels)", async () => {
+    const oversized = Array.from({ length: 257 }, (_, i) => BigInt(i + 1));
+    let err: Error | undefined;
+    try {
+      await buildTree(oversized, 8);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err?.message).to.match(/whitelist has 257 members, which exceeds the tree capacity 256/);
+  });
+
+  it("refuses invalid tree levels and out-of-bounds pathFor indices", async () => {
+    let levelErr: Error | undefined;
+    try {
+      await buildTree([11n], 0);
+    } catch (e) {
+      levelErr = e as Error;
+    }
+    expect(levelErr?.message).to.match(/levels must be an integer in 1\.\.30/);
+
+    const tree = await buildTree([11n, 22n], 2);
+    expect(() => tree.pathFor(-1)).to.throw(/leaf index -1 out of bounds/);
+    expect(() => tree.pathFor(4)).to.throw(/leaf index 4 out of bounds/);
+  });
 });

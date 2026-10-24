@@ -27,10 +27,20 @@ export type Tree = {
  * leaf = Poseidon(payee), node = Poseidon(left, right), pathIndices[l] = (index >> l) & 1.
  */
 export async function buildTree(payees: bigint[], levels = 8): Promise<Tree> {
+  if (!Number.isInteger(levels) || levels < 1 || levels > 30) {
+    throw new Error(`levels must be an integer in 1..30, got ${levels}`);
+  }
+  const capacity = 1 << levels;
+  if (payees.length > capacity) {
+    throw new Error(
+      `whitelist has ${payees.length} members, which exceeds the tree capacity ${capacity} for levels=${levels}`,
+    );
+  }
+
   const layer: bigint[] = [];
   for (const p of payees) layer.push(await leaf(p));
   const zeroLeaf = await H([0n]);
-  while (layer.length < 1 << levels) layer.push(zeroLeaf);
+  while (layer.length < capacity) layer.push(zeroLeaf);
 
   const layers: bigint[][] = [layer];
   for (let l = 0; l < levels; l++) {
@@ -42,6 +52,9 @@ export async function buildTree(payees: bigint[], levels = 8): Promise<Tree> {
   const root = layers[levels][0];
 
   const pathFor = (index: number) => {
+    if (!Number.isInteger(index) || index < 0 || index >= capacity) {
+      throw new Error(`leaf index ${index} out of bounds for tree capacity ${capacity}`);
+    }
     const pathElements: bigint[] = [];
     const pathIndices: number[] = [];
     let j = index;

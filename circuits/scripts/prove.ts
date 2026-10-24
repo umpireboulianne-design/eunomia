@@ -15,7 +15,7 @@ import { encodeProofHex, encodePublicHex } from "../../packages/prover/src/encod
 /** Batch capacity. MUST match `params[0]` in circuits.json (the circuit is compiled from
  *  it) and `MAX_BATCH` in the treasury contract, which refuses any policy whose daily
  *  limit could exceed N x per_task_limit — a period that outruns the batch cannot be
- *  proved at all. `n-matches-circuit.test.ts` fails if these drift apart. */
+ *  proved at all. `test/batch-size.test.ts` fails if these drift apart. */
 export const N = 16;
 const LEVELS = 8;
 
@@ -38,6 +38,15 @@ export interface ComplianceBatch {
 
 /** Build the circuit input for a batch (CSPRNG salts), matching the circuit layout. */
 export async function buildInput(batch: ComplianceBatch) {
+  if (batch.whitelist.length === 0) {
+    throw new Error("whitelist cannot be empty — at least one whitelisted payee is required");
+  }
+  if (batch.payments.length > N) {
+    throw new Error(
+      `batch has ${batch.payments.length} payments, which exceeds the circuit batch capacity N=${N}`,
+    );
+  }
+
   // Fail here rather than at witness generation: a mismatch means the batch is not the
   // period's real payment set, and the error is far more legible from this side than as
   // an unsatisfied constraint (or, worse, a paid-for on-chain rejection).
@@ -67,7 +76,10 @@ export async function buildInput(batch: ComplianceBatch) {
   for (let i = 0; i < N; i++) {
     commitments.push((await H([amount[i], payee[i], salt[i]])).toString());
     const idx = batch.whitelist.findIndex((m) => m === payee[i]);
-    const path = tree.pathFor(idx >= 0 ? idx : 0);
+    if (idx < 0) {
+      throw new Error(`payee ${payee[i]} at payment ${i} is not in the whitelist`);
+    }
+    const path = tree.pathFor(idx);
     pathElements.push(path.pathElements.map(String));
     pathIndices.push(path.pathIndices);
   }
