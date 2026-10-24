@@ -3,7 +3,10 @@
 use super::*;
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{storage::Instance as _, Address as _, Ledger, MockAuth, MockAuthInvoke},
+    testutils::{
+        storage::{Instance as _, Persistent as _},
+        Address as _, Ledger, MockAuth, MockAuthInvoke,
+    },
     token::{StellarAssetClient, TokenClient},
     Address, Env, IntoVal,
 };
@@ -1481,4 +1484,80 @@ fn whitelist_root_is_admin_only() {
     }]);
     client.set_whitelist_root(&root);
     assert_eq!(client.whitelist_root(), Some(root));
+}
+
+#[test]
+fn escrow_deadline_capped_at_ttl_horizon_and_ttl_outlives_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (payee, client, _token) = setup(&env, 1000_i128, 100_i128);
+    client.add_payee(&payee);
+
+    let now = 1_000_u64;
+    env.ledger().with_mut(|li| li.timestamp = now);
+
+    // One second beyond the TTL horizon is rejected with InvalidDeadline (#12).
+    let over_horizon = now + MAX_ESCROW_DURATION + 1;
+    assert_eq!(
+        client.try_create_escrow(&1_u64, &payee, &10_i128, &over_horizon),
+        Err(Ok(Error::InvalidDeadline))
+    );
+
+    // An escrow within the horizon has its persistent entry TTL extended past the deadline.
+    let deadline = now + 14 * SECONDS_PER_DAY;
+    let id = client.create_escrow(&1_u64, &payee, &10_i128, &deadline);
+    let ttl = env.as_contract(&client.address, || {
+        env.storage().persistent().get_ttl(&DataKey::EscrowEntry(id))
+    });
+    let deadline_ledgers = ((deadline - now) / 5) as u32;
+    assert!(ttl > deadline_ledgers);
+    assert!(ttl >= deadline_ledgers + LEDGERS_PER_WEEK - 1);
+
+    // Exactly at the horizon is accepted and still outlives the deadline in ledgers.
+    let at_horizon = now + MAX_ESCROW_DURATION;
+    let id_max = client.create_escrow(&2_u64, &payee, &10_i128, &at_horizon);
+    let ttl_max = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::EscrowEntry(id_max))
+    });
+    let horizon_ledgers = ((at_horizon - now) / 5) as u32;
+    assert!(ttl_max > horizon_ledgers);
+}
+
+#[test]
+fn persistent_entries_extend_ttl_on_write_and_pay() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (payee, client, _token) = setup(&env, 1000_i128, 100_i128);
+    let addr = client.address.clone();
+
+    client.add_payee(&payee);
+    client.set_payee_cap(&payee, &200_i128);
+
+    let payee_key = DataKey::Payee(payee.clone());
+    let cap_key = DataKey::PayeeCap(payee.clone());
+    let task_key = DataKey::TaskSpent(7_u64);
+
+    let ttl0_payee = env.as_contract(&addr, || env.storage().persistent().get_ttl(&payee_key));
+    let ttl0_cap = env.as_contract(&addr, || env.storage().persistent().get_ttl(&cap_key));
+    assert!(ttl0_payee >= PERSISTENT_TTL_EXTEND_TO - 1);
+    assert!(ttl0_cap >= PERSISTENT_TTL_EXTEND_TO - 1);
+
+    // Advance ledger sequence so remaining TTL falls below PERSISTENT_TTL_THRESHOLD.
+    env.ledger()
+        .with_mut(|li| li.sequence_number += ttl0_payee - 100);
+    let decayed_payee = env.as_contract(&addr, || env.storage().persistent().get_ttl(&payee_key));
+    let decayed_cap = env.as_contract(&addr, || env.storage().persistent().get_ttl(&cap_key));
+    assert!(decayed_payee < PERSISTENT_TTL_THRESHOLD);
+    assert!(decayed_cap < PERSISTENT_TTL_THRESHOLD);
+
+    // `pay` reads `Payee` and `PayeeCap` and writes `TaskSpent`, extending all three TTLs.
+    client.pay(&7_u64, &payee, &20_i128);
+    let ttl_payee = env.as_contract(&addr, || env.storage().persistent().get_ttl(&payee_key));
+    let ttl_cap = env.as_contract(&addr, || env.storage().persistent().get_ttl(&cap_key));
+    let ttl_task = env.as_contract(&addr, || env.storage().persistent().get_ttl(&task_key));
+    assert!(ttl_payee >= PERSISTENT_TTL_EXTEND_TO - 1);
+    assert!(ttl_cap >= PERSISTENT_TTL_EXTEND_TO - 1);
+    assert!(ttl_task >= PERSISTENT_TTL_EXTEND_TO - 1);
 }

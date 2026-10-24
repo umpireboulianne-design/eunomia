@@ -137,6 +137,7 @@ const SECONDS_PER_DAY: u64 = 86_400;
 // strand the funds: unreadable entry, permanently inflated lock).
 const LEDGERS_PER_WEEK: u32 = 120_960;
 const MAX_TTL_LEDGERS: u32 = 3_110_400; // ≈ 6 months of 5s ledgers (order of the network cap)
+const MAX_ESCROW_DURATION: u64 = (MAX_TTL_LEDGERS - LEDGERS_PER_WEEK) as u64 * 5;
 // Instance storage (Config, Session, Locked, NextEscrowId, reputation policy, Paused) holds
 // the treasury's core policy. A low-activity treasury — e.g. one that only ever calls `pay`,
 // which writes to persistent buckets — would never otherwise bump its instance TTL, so it
@@ -149,6 +150,10 @@ const INSTANCE_TTL_EXTEND_TO: u32 = 4 * LEDGERS_PER_WEEK; // …back up to ~1 mo
 // them to ~4 months, so a bucket that is still being read can never have been archived.
 const MONTH_TTL_THRESHOLD: u32 = 8 * LEDGERS_PER_WEEK;
 const MONTH_TTL_EXTEND_TO: u32 = 17 * LEDGERS_PER_WEEK;
+// Long-lived persistent entries (Payee, PayeeCap, TaskSpent) get their TTL extended on write
+// and when read in the payment path.
+const PERSISTENT_TTL_THRESHOLD: u32 = 8 * LEDGERS_PER_WEEK;
+const PERSISTENT_TTL_EXTEND_TO: u32 = 17 * LEDGERS_PER_WEEK;
 /// A task budget names at most this many payees — it lives in instance storage, which every
 /// call loads.
 pub const MAX_TASK_PAYEES: u32 = 16;
@@ -208,9 +213,11 @@ impl Treasury {
         let cfg = Self::cfg(&env);
         cfg.admin.require_auth();
         Self::bump_instance(&env);
+        let key = DataKey::Payee(payee.clone());
+        env.storage().persistent().set(&key, &true);
         env.storage()
             .persistent()
-            .set(&DataKey::Payee(payee.clone()), &true);
+            .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
         env.events().publish((symbol_short!("payee_add"),), payee);
     }
 
@@ -379,6 +386,9 @@ impl Treasury {
             env.storage().persistent().remove(&key);
         } else {
             env.storage().persistent().set(&key, &cap);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
         }
         env.events().publish((symbol_short!("payee_cap"), payee), cap);
         Ok(())
@@ -572,10 +582,16 @@ impl Treasury {
         // per-hour buckets enforce the rolling window; per-task is the attribution ledger.
         Self::record_window_spend(&env, amount);
         Self::record_month_spend(&env, &to, amount, month);
+        let task_key = DataKey::TaskSpent(task_id);
         let task_spent = Self::task_spent(env.clone(), task_id);
         env.storage()
             .persistent()
-            .set(&DataKey::TaskSpent(task_id), &(task_spent + amount));
+            .set(&task_key, &(task_spent + amount));
+        env.storage().persistent().extend_ttl(
+            &task_key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
         if let Some(mut s) = session {
             s.spent += amount;
             env.storage().instance().set(&DataKey::Session, &s);
@@ -684,7 +700,7 @@ impl Treasury {
             return Err(Error::InvalidAmount);
         }
         let now = env.ledger().timestamp();
-        if deadline <= now {
+        if deadline <= now || deadline - now > MAX_ESCROW_DURATION {
             return Err(Error::InvalidDeadline);
         }
         Self::payee_allowed(&env, &payee)?;
@@ -734,7 +750,9 @@ impl Treasury {
             .set(&DataKey::EscrowEntry(id), &escrow);
         // Keep the entry alive comfortably past its deadline (see TTL constants above) —
         // otherwise `Locked` (instance) could outlive an archived entry and strand funds.
-        let ttl = (((deadline - now) / 5) + LEDGERS_PER_WEEK as u64).min(MAX_TTL_LEDGERS as u64) as u32;
+        let ttl = (((deadline - now) / 5) + LEDGERS_PER_WEEK as u64)
+            .min(MAX_TTL_LEDGERS as u64)
+            .min(env.storage().max_ttl() as u64) as u32;
         env.storage()
             .persistent()
             .extend_ttl(&DataKey::EscrowEntry(id), ttl, ttl);
@@ -774,10 +792,16 @@ impl Treasury {
 
         // EFFECTS before INTERACTION (checks-effects-interactions): record the
         // attribution, drop the escrow, release the lock, then move funds out last.
+        let task_key = DataKey::TaskSpent(escrow.task_id);
         let task_spent = Self::task_spent(env.clone(), escrow.task_id);
         env.storage()
             .persistent()
-            .set(&DataKey::TaskSpent(escrow.task_id), &(task_spent + escrow.amount));
+            .set(&task_key, &(task_spent + escrow.amount));
+        env.storage().persistent().extend_ttl(
+            &task_key,
+            PERSISTENT_TTL_THRESHOLD,
+            PERSISTENT_TTL_EXTEND_TO,
+        );
         env.storage().persistent().remove(&DataKey::EscrowEntry(id));
         env.storage()
             .instance()
@@ -948,8 +972,15 @@ impl Treasury {
     fn check_month_limits(env: &Env, to: &Address, amount: i128) -> Result<u32, Error> {
         let month = month_of(env.ledger().timestamp());
         let cap = Self::payee_cap(env.clone(), to.clone());
-        if cap > 0 && Self::payee_spent(env.clone(), to.clone(), month) + amount > cap {
-            return Err(Error::ExceedsPayeeCap);
+        if cap > 0 {
+            if Self::payee_spent(env.clone(), to.clone(), month) + amount > cap {
+                return Err(Error::ExceedsPayeeCap);
+            }
+            env.storage().persistent().extend_ttl(
+                &DataKey::PayeeCap(to.clone()),
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
         }
         let limit = Self::monthly_limit(env.clone());
         if limit > 0 && Self::month_spent(env.clone(), month) + amount > limit {
@@ -990,6 +1021,11 @@ impl Treasury {
     /// Whitelist OR earned-reputation gate. See `set_reputation_policy`.
     fn payee_allowed(env: &Env, to: &Address) -> Result<(), Error> {
         if Self::is_payee(env.clone(), to.clone()) {
+            env.storage().persistent().extend_ttl(
+                &DataKey::Payee(to.clone()),
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
             return Ok(());
         }
         let registry: Option<Address> = env.storage().instance().get(&DataKey::RepRegistry);

@@ -40,6 +40,10 @@ pub trait TreasuryApi {
     fn get_config(env: Env) -> Config;
 }
 
+const LEDGERS_PER_WEEK: u32 = 120_960;
+const OWNED_TTL_THRESHOLD: u32 = 8 * LEDGERS_PER_WEEK;
+const OWNED_TTL_EXTEND_TO: u32 = 17 * LEDGERS_PER_WEEK;
+
 #[contract]
 pub struct TreasuryRegistry;
 
@@ -64,6 +68,9 @@ impl TreasuryRegistry {
             env.events()
                 .publish((symbol_short!("regd"), owner), treasury);
         }
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, OWNED_TTL_THRESHOLD, OWNED_TTL_EXTEND_TO);
     }
 
     /// Drop `treasury` from `owner`'s list. Owner-signed; an absent entry is a no-op.
@@ -85,6 +92,9 @@ impl TreasuryRegistry {
             env.storage().persistent().remove(&key);
         } else {
             env.storage().persistent().set(&key, &owned);
+            env.storage()
+                .persistent()
+                .extend_ttl(&key, OWNED_TTL_THRESHOLD, OWNED_TTL_EXTEND_TO);
         }
         env.events()
             .publish((symbol_short!("unregd"), owner), treasury);
@@ -102,7 +112,7 @@ impl TreasuryRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::testutils::{storage::Persistent as _, Address as _};
 
     /// Stands in for a treasury: answers `get_config` with the admin it was built with.
     #[contract]
@@ -233,5 +243,22 @@ mod test {
         let env = Env::default();
         let client = registry(&env);
         assert_eq!(client.treasuries_of(&Address::generate(&env)).len(), 0);
+    }
+
+    #[test]
+    fn register_extends_owned_ttl() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let client = registry(&env);
+        let owner = Address::generate(&env);
+        let t1 = treasury_of(&env, &owner);
+
+        client.register(&owner, &t1);
+        let ttl = env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Owned(owner.clone()))
+        });
+        assert!(ttl >= OWNED_TTL_EXTEND_TO - 1);
     }
 }

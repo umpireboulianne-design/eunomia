@@ -28,6 +28,10 @@ pub trait ReputationOracle {
     fn reputation_of(env: Env, agent: Address) -> i128;
 }
 
+const LEDGERS_PER_WEEK: u32 = 120_960;
+pub(crate) const PAYEE_TTL_THRESHOLD: u32 = 8 * LEDGERS_PER_WEEK;
+pub(crate) const PAYEE_TTL_EXTEND_TO: u32 = 17 * LEDGERS_PER_WEEK;
+
 #[contract]
 pub struct EunomiaPolicy;
 
@@ -41,7 +45,11 @@ impl EunomiaPolicy {
     /// Whitelist a payee. Admin-only.
     pub fn add_payee(env: Env, payee: Address) {
         Self::admin(&env).require_auth();
-        env.storage().persistent().set(&DataKey::Payee(payee), &true);
+        let key = DataKey::Payee(payee);
+        env.storage().persistent().set(&key, &true);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, PAYEE_TTL_THRESHOLD, PAYEE_TTL_EXTEND_TO);
     }
 
     /// Remove a payee from the whitelist. Admin-only.

@@ -12,6 +12,10 @@ enum DataKey {
     Score(Address),
 }
 
+const LEDGERS_PER_WEEK: u32 = 120_960;
+const SCORE_TTL_THRESHOLD: u32 = 8 * LEDGERS_PER_WEEK;
+const SCORE_TTL_EXTEND_TO: u32 = 17 * LEDGERS_PER_WEEK;
+
 #[contract]
 pub struct ReputationOracle;
 
@@ -25,7 +29,11 @@ impl ReputationOracle {
     pub fn set_score(env: Env, agent: Address, score: i128) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
-        env.storage().persistent().set(&DataKey::Score(agent), &score);
+        let key = DataKey::Score(agent);
+        env.storage().persistent().set(&key, &score);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, SCORE_TTL_THRESHOLD, SCORE_TTL_EXTEND_TO);
     }
 
     pub fn reputation_of(env: Env, agent: Address) -> i128 {
@@ -39,7 +47,10 @@ impl ReputationOracle {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Env};
+    use soroban_sdk::{
+        testutils::{storage::Persistent as _, Address as _},
+        Env,
+    };
 
     #[test]
     fn set_and_read_score() {
@@ -53,5 +64,12 @@ mod test {
         assert_eq!(client.reputation_of(&agent), 0);
         client.set_score(&agent, &75_i128);
         assert_eq!(client.reputation_of(&agent), 75);
+
+        let ttl = env.as_contract(&id, || {
+            env.storage()
+                .persistent()
+                .get_ttl(&DataKey::Score(agent.clone()))
+        });
+        assert!(ttl >= SCORE_TTL_EXTEND_TO - 1);
     }
 }

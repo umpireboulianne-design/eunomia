@@ -1,6 +1,10 @@
 #![cfg(test)]
-use crate::{EunomiaPolicy, EunomiaPolicyClient};
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Env};
+use crate::{DataKey, EunomiaPolicy, EunomiaPolicyClient, PAYEE_TTL_EXTEND_TO};
+use soroban_sdk::{
+    contract, contractimpl,
+    testutils::{storage::Persistent as _, Address as _},
+    Address, Env,
+};
 
 fn setup() -> (Env, EunomiaPolicyClient<'static>) {
     let env = Env::default();
@@ -58,4 +62,18 @@ fn reputation_gated_payee_is_authorized() {
     // min_reputation = 0 disables the gate (whitelist-only) → rejected.
     policy.set_reputation_policy(&rep, &0);
     assert!(!policy.is_authorized(&payee, &token));
+}
+
+#[test]
+fn add_payee_extends_persistent_ttl() {
+    let (env, policy) = setup();
+    let payee = Address::generate(&env);
+    policy.add_payee(&payee);
+
+    let ttl = env.as_contract(&policy.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::Payee(payee.clone()))
+    });
+    assert!(ttl >= PAYEE_TTL_EXTEND_TO - 1);
 }
